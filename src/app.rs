@@ -1,90 +1,124 @@
 use piston::input::*;
-use opengl_graphics::{ GlGraphics, OpenGL };
-use ecs::{World,Entity,BuildData};
+use opengl_graphics::{GlGraphics, OpenGL};
 use component::transform::Transform;
-
-components! {
-    struct MyComponents {
-        #[hot] transform: Transform
-    }
-}
-
-systems! {
-    struct MySystems<MyComponents, ()>;
-}
+use system::rotate::Rotate;
+use specs::{Entity, Planner, World, Join};
+use glutin_window::GlutinWindow;
+use piston::window::{WindowSettings, AdvancedWindow};
+use piston::event_loop::*;
 
 pub struct App {
     pub gl: GlGraphics, // OpenGL for drawing backend
-    pub world: World<MySystems>,
-    pub entity: Entity
+    pub entity: Entity,
+    pub planner: Planner<f64>,
+    pub window: GlutinWindow,
 }
 
 impl App {
-
     pub fn init(width: u32, height: u32, opengl: OpenGL) -> App {
-        let mut world = World::<MySystems>::new();
+        // Create an Glutin window.
+        let mut window: GlutinWindow = WindowSettings::new(
+            "spinning-square",
+            [width, height]
+            )
+            .opengl(opengl)
+            .exit_on_esc(true)
+            .build()
+            .unwrap();
+
+        // Create a new game and run it.
+        let mut w = World::new();
+
+        // Register all components
+        w.register::<Transform>();
+
+        // Create entity
+        // TODO: use nalgebra matrix (check nphysics, ncollide)
+        let e = w.create_now().with(
+            Transform {
+                x: (width/2) as f64, y: (height/2) as f64, scale_x: 1.0, scale_y: 0.5, rotation: 0.0, pivot_x: 25.0, pivot_y: 25.0
+                }
+            ).build();
+
+        let rotate_system = Rotate {};
+        let mut planner = Planner::new(w, 4);
+        planner.add_system(rotate_system, "rotate", 0);
+
         App {
             gl: GlGraphics::new(opengl),
-            entity: world.create_entity(
-                    |entity: BuildData<MyComponents>, data: &mut MyComponents| {
-                        data.transform.add(&entity,
-                            Transform {
-                                 x: (width/2) as f64, y: (height/2) as f64, scale_x: 1.0, scale_y: 0.5, rotation: 0.0, pivot_x: 25.0, pivot_y: 25.0
-                             });
-                    }),
-            world: world
+            entity: e,
+            planner: planner,
+            window: window,
+        }
+    }
+
+    pub fn run(&mut self) {
+        let mut capture_cursor = false;
+        let mut events = self.window.events();
+        while let Some(e) = events.next(&mut self.window) {
+            if let Some(r) = e.render_args() {
+                self.render(&r);
+            }
+
+            if let Some(u) = e.update_args() {
+                self.update(&u);
+            }
+
+            // Handle keyboard
+            if let Some(Button::Keyboard(key)) = e.press_args() {
+                if key == Key::C {
+                    println!("Turned capture cursor on");
+                    capture_cursor = !capture_cursor;
+                    self.window.set_capture_cursor(capture_cursor);
+                }
+                if key == Key::W {
+                    //self.entity.
+                }
+
+                println!("Pressed keyboard key '{:?}'", key);
+            };
+
         }
     }
 
     pub fn render(&mut self, args: &RenderArgs) {
-        use graphics::*;
 
-        const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
-        const RED:   [f32; 4] = [1.0, 0.0, 0.0, 1.0];
+        // wait waits for all scheduled systems to finish
+        // If wait is not called, all systems are run in parallel, waiting on locks
+        self.planner.wait();
 
-        let square = rectangle::square(0.0, 0.0, 50.0);
-        let mut rotation = 0.0;
-        // Position
-        let mut x = 0.0;
-        let mut y = 0.0;
-        // Pivot
-        let mut px = 0.0;
-        let mut py = 0.0;
-        // Scale
-        let mut sx = 0.0;
-        let mut sy = 0.0;
-        self.world.with_entity_data(&self.entity, |entity, data| {
-            let tfm = data.transform[entity];
-            rotation = tfm.rotation;
-            x = tfm.x;
-            y = tfm.y;
-            px = tfm.pivot_x;
-            py = tfm.pivot_y;
-            sx = tfm.scale_x;
-            sy = tfm.scale_y;
-        });
+        let transforms = self.planner.mut_world().read::<Transform>();
 
-        self.gl.draw(args.viewport(), |c, gl| {
-            // Clear the screen.
-            clear(GREEN, gl);
+        for tfm in transforms.iter() {
+            use graphics::*;
 
-            // TODO: move to system
-            let transform = c.transform
-                .trans(x, y)
-                .rot_rad(rotation)
-                .scale(sx, sy)
-                .trans(-px, -py);
+            const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+            const RED: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 
-            // Draw a box rotating around the middle of the screen.
-            rectangle(RED, square, transform, gl);
-        });
+            let square = rectangle::square(0.0, 0.0, 50.0);
+
+            self.gl.draw(args.viewport(), |c, gl| {
+                // Clear the screen.
+                clear(GREEN, gl);
+
+                let transform = c.transform
+                    .trans(tfm.x, tfm.y)
+                    .rot_rad(tfm.rotation)
+                    .scale(tfm.scale_x, tfm.scale_y)
+                    .trans(-tfm.pivot_x, -tfm.pivot_y);
+
+                // Draw a box rotating around a point.
+                rectangle(RED, square, transform, gl);
+            });
+        }
+
+
     }
 
     pub fn update(&mut self, args: &UpdateArgs) {
-        self.world.with_entity_data(&self.entity, |entity, data| {
-            // Rotate 2 radians per second.
-            data.transform[entity].rotation += 2.0 * args.dt;
-        });
-    }
+        // TODO: gather input
 
+        // Update systems
+        self.planner.dispatch(args.dt);
+    }
 }
